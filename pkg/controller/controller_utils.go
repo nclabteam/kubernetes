@@ -847,6 +847,7 @@ func (s ActivePodsWithRanks) Swap(i, j int) {
 // Less compares two pods with corresponding ranks and returns true if the first
 // one should be preferred for deletion.
 func (s ActivePodsWithRanks) Less(i, j int) bool {
+	klog.Info("#### This is func Less(i, i int) from controller_utils.go")
 	// 1. Unassigned < assigned
 	// If only one of the pods is unassigned, the unassigned one is smaller
 	if s.Pods[i].Spec.NodeName != s.Pods[j].Spec.NodeName && (len(s.Pods[i].Spec.NodeName) == 0 || len(s.Pods[j].Spec.NodeName) == 0) {
@@ -861,7 +862,24 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 	if podutil.IsPodReady(s.Pods[i]) != podutil.IsPodReady(s.Pods[j]) {
 		return !podutil.IsPodReady(s.Pods[i])
 	}
-	// 4. Doubled up < not doubled up
+
+	// 4. controller.kubernetes.io/delete-priority=1 < controller.kubernetes.io/delete-priority=0
+	//If pod has annotation controller.kubernetes.io/delete-priority the larger is small
+	if s.Pods[i].Annotations[deletePriorityPodAnnotationKey] != s.Pods[j].Annotations[deletePriorityPodAnnotationKey] {
+		s1, err1 := strconv.Atoi(s.Pods[i].Annotations[deletePriorityPodAnnotationKey])
+		s2, err2 := strconv.Atoi(s.Pods[j].Annotations[deletePriorityPodAnnotationKey])
+		if err1 == nil && err2 == nil {
+			return s1 > s2
+		}
+		if err1 != nil && err2 == nil {
+			return true
+		}
+		if err1 == nil && err2 != nil {
+			return false
+		}
+	}
+
+	// 5. Doubled up < not doubled up
 	// If one of the two pods is on the same node as one or more additional
 	// ready pods that belong to the same replicaset, whichever pod has more
 	// colocated ready pods is less
@@ -870,7 +888,7 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 	}
 	// TODO: take availability into account when we push minReadySeconds information from deployment into pods,
 	//       see https://github.com/kubernetes/kubernetes/issues/22065
-	// 5. Been ready for empty time < less time < more time
+	// 6. Been ready for empty time < less time < more time
 	// If both pods are ready, the latest ready one is smaller
 	if podutil.IsPodReady(s.Pods[i]) && podutil.IsPodReady(s.Pods[j]) {
 		readyTime1 := podReadyTime(s.Pods[i])
@@ -879,11 +897,11 @@ func (s ActivePodsWithRanks) Less(i, j int) bool {
 			return afterOrZero(readyTime1, readyTime2)
 		}
 	}
-	// 6. Pods with containers with higher restart counts < lower restart counts
+	// 7. Pods with containers with higher restart counts < lower restart counts
 	if maxContainerRestarts(s.Pods[i]) != maxContainerRestarts(s.Pods[j]) {
 		return maxContainerRestarts(s.Pods[i]) > maxContainerRestarts(s.Pods[j])
 	}
-	// 7. Empty creation time pods < newer pods < older pods
+	// 8. Empty creation time pods < newer pods < older pods
 	if !s.Pods[i].CreationTimestamp.Equal(&s.Pods[j].CreationTimestamp) {
 		return afterOrZero(&s.Pods[i].CreationTimestamp, &s.Pods[j].CreationTimestamp)
 	}
