@@ -636,6 +636,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 			rescaleReason = fmt.Sprintf("%s above target", rescaleMetric)
 		}
 		if desiredReplicas < currentReplicas {
+			//TODO set pods deletion annotation here
 			rescaleReason = "All metrics below target"
 		}
 		if hpa.Spec.Behavior == nil {
@@ -644,12 +645,15 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 			desiredReplicas = a.normalizeDesiredReplicasWithBehaviors(hpa, key, currentReplicas, desiredReplicas, minReplicas)
 		}
 		rescale = desiredReplicas != currentReplicas
+		//TODO phuclh => desiredReplicas - currentReplicas > 0 => upscale / desiredReplicas - currentReplicas < 0 => downscale
+		//TODO if downscale => update pods deletion annotation based on traffic ratio
 	}
 
 	if rescale {
 		scale.Spec.Replicas = desiredReplicas
 		_, err = a.scaleNamespacer.Scales(hpa.Namespace).Update(context.TODO(), targetGR, scale, metav1.UpdateOptions{})
 		if err != nil {
+			//TODO if rescale failed => reset pods annotation
 			a.eventRecorder.Eventf(hpa, v1.EventTypeWarning, "FailedRescale", "New size: %d; reason: %s; error: %v", desiredReplicas, rescaleReason, err.Error())
 			setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedUpdateScale", "the HPA controller was unable to update the target scale: %v", err)
 			a.setCurrentReplicasInStatus(hpa, currentReplicas)
