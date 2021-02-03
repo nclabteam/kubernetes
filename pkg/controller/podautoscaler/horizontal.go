@@ -628,6 +628,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		klog.V(4).Infof("proposing %v desired replicas (based on %s from %s) for %s", metricDesiredReplicas, metricName, metricTimestamp, reference)
 
 		rescaleMetric := ""
+		isDownScale := false
+		var podsDiff int32 = 0 // pods diff between desire and current
+		_ = podsDiff // This just for preventing unused error
 		if metricDesiredReplicas > desiredReplicas {
 			desiredReplicas = metricDesiredReplicas
 			rescaleMetric = metricName
@@ -638,6 +641,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		if desiredReplicas < currentReplicas {
 			//TODO set pods deletion annotation here
 			rescaleReason = "All metrics below target"
+			isDownScale = true // HPA downscale
 		}
 		if hpa.Spec.Behavior == nil {
 			desiredReplicas = a.normalizeDesiredReplicas(hpa, key, currentReplicas, desiredReplicas, minReplicas)
@@ -647,6 +651,17 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		rescale = desiredReplicas != currentReplicas
 		//TODO phuclh => desiredReplicas - currentReplicas > 0 => upscale / desiredReplicas - currentReplicas < 0 => downscale
 		//TODO if downscale => update pods deletion annotation based on traffic ratio
+		// If downscale we need to calculate how many pods will be killed
+		if rescale {
+			if isDownScale {
+				podsDiff = currentReplicas - desiredReplicas
+				klog.Infof("Down Scale====== phuclh: Number of pods will be killed = %d", podsDiff)
+			} else {
+				//TODO if we need to handle upscale => Handle here
+				podsDiff = desiredReplicas - currentReplicas
+				klog.Infof("Up Scale====== phuclh: Number of pods will be scheduled = %d", podsDiff)
+			}
+		}
 	}
 
 	if rescale {
