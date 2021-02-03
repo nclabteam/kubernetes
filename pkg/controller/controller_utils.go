@@ -847,7 +847,6 @@ func (s ActivePodsWithRanks) Swap(i, j int) {
 // Less compares two pods with corresponding ranks and returns true if the first
 // one should be preferred for deletion.
 func (s ActivePodsWithRanks) Less(i, j int) bool {
-	klog.Info("#### This is func Less(i, i int) from controller_utils.go")
 	// 1. Unassigned < assigned
 	// If only one of the pods is unassigned, the unassigned one is smaller
 	if s.Pods[i].Spec.NodeName != s.Pods[j].Spec.NodeName && (len(s.Pods[i].Spec.NodeName) == 0 || len(s.Pods[j].Spec.NodeName) == 0) {
