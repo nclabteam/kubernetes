@@ -19,6 +19,9 @@ package podautoscaler
 import (
 	"context"
 	"fmt"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
 	"math"
 	"time"
 
@@ -55,6 +58,8 @@ import (
 var (
 	scaleUpLimitFactor  = 2.0
 	scaleUpLimitMinimum = 4.0
+	Config    *rest.Config
+	Clientset *kubernetes.Clientset
 )
 
 type timestampedRecommendation struct {
@@ -157,6 +162,9 @@ func NewHorizontalController(
 		delayOfInitialReadinessStatus,
 	)
 	hpaController.replicaCalc = replicaCalc
+	if Clientset == nil {
+		initClientSet()
+	}
 
 	return hpaController
 }
@@ -652,14 +660,21 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		//TODO phuclh => desiredReplicas - currentReplicas > 0 => upscale / desiredReplicas - currentReplicas < 0 => downscale
 		//TODO if downscale => update pods deletion annotation based on traffic ratio
 		// If downscale we need to calculate how many pods will be killed
+		deploymentName := hpav1Shared.Spec.ScaleTargetRef.Name
 		if rescale {
 			if isDownScale {
 				podsDiff = currentReplicas - desiredReplicas
 				klog.Infof("Down Scale====== phuclh: Number of pods will be killed = %d", podsDiff)
+				klog.Infof("Down Scale====== phuclh: Down scaling deployment %s", deploymentName)
+				nodesList, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
+				for i, node := range nodesList.Items{
+					klog.Infof("Node %d: %s", i, node.Name)
+				}
 			} else {
 				//TODO if we need to handle upscale => Handle here
 				podsDiff = desiredReplicas - currentReplicas
 				klog.Infof("Up Scale====== phuclh: Number of pods will be scheduled = %d", podsDiff)
+				klog.Infof("Up Scale====== phuclh: Up scaling deployment %s", deploymentName)
 			}
 		}
 	}
@@ -1208,4 +1223,10 @@ func min(a, b int32) int32 {
 		return a
 	}
 	return b
+}
+
+func initClientSet() {
+	klog.Info("[][][][][][] Clientset initial [][][][][][]")
+	Config, _ = clientcmd.BuildConfigFromFlags("", "/home/config")
+	Clientset, _ = kubernetes.NewForConfig(Config)
 }
