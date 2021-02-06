@@ -189,6 +189,7 @@ func (a *HorizontalController) Run(stopCh <-chan struct{}) {
 
 // obj could be an *v1.HorizontalPodAutoscaler, or a DeletionFinalStateUnknown marker item.
 func (a *HorizontalController) updateHPA(old, cur interface{}) {
+
 	a.enqueueHPA(cur)
 }
 
@@ -1227,6 +1228,7 @@ func min(a, b int32) int32 {
 
 func initClientSet() {
 	klog.Info("[][][][][][] Clientset initial [][][][][][]")
+	//TODO use config file instead of hard code the kubeconfigPath
 	Config, _ = clientcmd.BuildConfigFromFlags("", "/home/config")
 	Clientset, _ = kubernetes.NewForConfig(Config)
 }
