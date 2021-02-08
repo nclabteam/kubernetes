@@ -55,6 +55,8 @@ import (
 	metricsclient "k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
 )
 
+const deletePriorityPodAnnotationKey = "controller.kubernetes.io/replicaset-downscale-priority"
+
 var (
 	scaleUpLimitFactor  = 2.0
 	scaleUpLimitMinimum = 4.0
@@ -105,6 +107,9 @@ type HorizontalController struct {
 	// Latest autoscaler events
 	scaleUpEvents   map[string][]timestampedScaleEvent
 	scaleDownEvents map[string][]timestampedScaleEvent
+
+	// Map to store traffic ratio between nodes
+	nodesTrafficRatio map[string]float32
 }
 
 // NewHorizontalController creates a new HorizontalController.
@@ -165,6 +170,7 @@ func NewHorizontalController(
 	if Clientset == nil {
 		initClientSet()
 	}
+	hpaController.nodesTrafficRatio = testTrafficRatioMapGen()
 
 	return hpaController
 }
@@ -638,8 +644,8 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 
 		rescaleMetric := ""
 		isDownScale := false
-		var podsDiff int32 = 0 // pods diff between desire and current
-		_ = podsDiff // This just for preventing unused error
+		var numOfPodsWillBeDownScaled int32 = 0 // pods diff between desire and current
+		_ = numOfPodsWillBeDownScaled           // This just for preventing unused error
 		if metricDesiredReplicas > desiredReplicas {
 			desiredReplicas = metricDesiredReplicas
 			rescaleMetric = metricName
@@ -661,21 +667,60 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		//TODO phuclh => desiredReplicas - currentReplicas > 0 => upscale / desiredReplicas - currentReplicas < 0 => downscale
 		//TODO if downscale => update pods deletion annotation based on traffic ratio
 		// If downscale we need to calculate how many pods will be killed
-		deploymentName := hpav1Shared.Spec.ScaleTargetRef.Name
 		if rescale {
+			deploymentName := hpav1Shared.Spec.ScaleTargetRef.Name
+			// Get all worker nodes
+			nodesList, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
+				LabelSelector: "node-role.kubernetes.io/worker=true",
+			})
 			if isDownScale {
-				podsDiff = currentReplicas - desiredReplicas
-				klog.Infof("Down Scale====== phuclh: Number of pods will be killed = %d", podsDiff)
-				klog.Infof("Down Scale====== phuclh: Down scaling deployment %s", deploymentName)
-				nodesList, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-				for i, node := range nodesList.Items{
-					klog.Infof("Node %d: %s", i, node.Name)
+				updateTrafficRatioBetweenNodes(a) // We need to update traffic ratio for nodes whenever downscale happens
+				numOfPodsWillBeDownScaled = currentReplicas - desiredReplicas
+				klog.Infof("phulh logging => Down Scale: Number of pods will be killed = %d", numOfPodsWillBeDownScaled)
+				applicationPodsInCluster := getPodsFromDeploymentName(deploymentName)
+				nodeWithAppPodsMap := make(map[string][]v1.Pod)
+				// map pods with node
+				for _, node := range nodesList.Items {
+					podsInNode := make([]v1.Pod, 0)
+					for _, pod := range applicationPodsInCluster.Items {
+						if pod.Spec.NodeName == node.Name {
+							podsInNode = append(podsInNode, pod)
+						}
+					}
+					nodeWithAppPodsMap[node.Name] = podsInNode
 				}
+				// Debugging ==> check num of pods on each node
+				for k, v := range nodeWithAppPodsMap {
+					klog.Infof("Logging phuclh: Node %s has %d pods", k, len(v))
+				}
+
+				for nodeName, totalPods := range nodeWithAppPodsMap {
+					numberOfPodsToDelete := int(math.RoundToEven(float64(float32(len(totalPods)) * (a.nodesTrafficRatio[nodeName]))))
+					klog.Infof("Number of pods will be delete on node %s = %d", nodeName, numberOfPodsToDelete)
+					for index, pod := range totalPods {
+						if index == (len(totalPods) - numberOfPodsToDelete) {
+							break
+						}
+						realPod, _ := Clientset.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+						copyPod := realPod.DeepCopy()
+						annotation := copyPod.ObjectMeta.Annotations
+						if annotation == nil {
+							annotation = make(map[string]string)
+						}
+						annotation[deletePriorityPodAnnotationKey] = "1"
+						copyPod.ObjectMeta.Annotations = annotation
+						_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
+						if error != nil {
+							klog.Fatal("Can not update pod %s annotation", pod.Name)
+						}
+					}
+				}
+
 			} else {
 				//TODO if we need to handle upscale => Handle here
-				podsDiff = desiredReplicas - currentReplicas
-				klog.Infof("Up Scale====== phuclh: Number of pods will be scheduled = %d", podsDiff)
-				klog.Infof("Up Scale====== phuclh: Up scaling deployment %s", deploymentName)
+				numOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
+				klog.Infof("phulh logging => Up Scale: Number of pods will be scheduled = %d", numOfPodsWillBeDownScaled)
+				klog.Infof("phulh logging => Up Scale: Up scaling deployment %s", deploymentName)
 			}
 		}
 	}
@@ -1231,4 +1276,41 @@ func initClientSet() {
 	//TODO use config file instead of hard code the kubeconfigPath
 	Config, _ = clientcmd.BuildConfigFromFlags("", "/home/config")
 	Clientset, _ = kubernetes.NewForConfig(Config)
+}
+
+// getPodsFromDeploymentName (deploymentName string) *v1.PodList is used to get all pods managed be deployment "deploymentName"
+func getPodsFromDeploymentName (deploymentName string) *v1.PodList {
+
+	options := metav1.ListOptions{
+		LabelSelector: "app=" + deploymentName,
+	}
+	podsList, _ := Clientset.CoreV1().Pods("default").List(context.TODO(),options)
+	return podsList
+
+}
+
+// Create test traffic ratio map for nodes
+func testTrafficRatioMapGen () map[string]float32 {
+
+	// Get all worker nodes
+	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/worker=true",
+	})
+	// Init equal ratio for all nodes
+	nodesTrafficRatio := make(map[string]float32)
+	for _, node := range workerNodes.Items {
+		if _, exist := nodesTrafficRatio[node.Name]; exist {
+			nodesTrafficRatio[node.Name] = 1
+		}
+	}
+	return nodesTrafficRatio
+}
+
+func updateTrafficRatioBetweenNodes (hpaController *HorizontalController) {
+
+	//TODO update nodes traffic ratio here by getting information from endpoint on each node
+	//The following is just for testing so we hard code
+	hpaController.nodesTrafficRatio["2node2"] = 0.8
+	hpaController.nodesTrafficRatio["3node3"] = 0.2
+
 }
