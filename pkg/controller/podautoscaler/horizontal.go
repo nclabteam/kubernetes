@@ -57,7 +57,7 @@ import (
 )
 
 const deletePriorityPodAnnotationKey = "controller.kubernetes.io/replicaset-downscale-priority"
-
+const workerNodeLabel = "node-role.kubernetes.io/worker=true"
 var (
 	scaleUpLimitFactor  = 2.0
 	scaleUpLimitMinimum = 4.0
@@ -672,7 +672,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		if rescale {
 			//Get all worker nodes
 			nodesList, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
-				LabelSelector: "node-role.kubernetes.io/worker=true",
+				LabelSelector: workerNodeLabel,
 			})
 			if isDownScale {
 				updateTrafficRatioBetweenNodes(a) // We need to update traffic ratio for nodes whenever downscale happens
