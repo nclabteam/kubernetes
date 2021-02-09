@@ -717,8 +717,8 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 			} else {
 				//TODO if we need to handle upscale => Handle here
 				TotalOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
-				klog.Infof("phulh logging => Up Scale: Number of pods will be scheduled = %d", TotalOfPodsWillBeDownScaled)
-				klog.Infof("phulh logging => Up Scale: Up scaling deployment %s", deploymentName)
+				klog.Infof("phuclh logging => Up Scale: Number of pods will be scaled = %d", TotalOfPodsWillBeDownScaled)
+				klog.Infof("phuclh logging => Up Scale: Up scaling deployment %s", deploymentName)
 			}
 		}
 	}
