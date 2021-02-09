@@ -714,6 +714,11 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
 					}
 				}
+
+				if TotalOfPodsWillBeDownScaled != 0 {
+					klog.Infof("Error phuclh: bug bug bug")
+				}
+
 			} else {
 				//TODO if we need to handle upscale => Handle here
 				TotalOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
