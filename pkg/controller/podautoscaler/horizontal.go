@@ -1340,6 +1340,9 @@ func deleteAllPodsAnnotation (applicationPods *v1.PodList) {
 func getSortedMapKeysByValue (inputMap map[string]float64) []string {
 	mapKeys := make([]string, 0, len(inputMap))
 	for key := range inputMap {
+		if key == "total" {
+			continue
+		}
 		mapKeys = append(mapKeys, key)
 	}
 	sort.Slice(mapKeys, func(i, j int) bool {
