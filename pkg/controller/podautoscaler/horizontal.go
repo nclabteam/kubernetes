@@ -701,18 +701,24 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						continue
 					}
 					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - a.nodesTrafficRatio[node])))
+					klog.Infof("$$$Logging calculation result for node %s", node)
+					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %sd",node, numOfPodsWillBeDownScaledOnNode)
+					count := 0
 					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node]) - 1 {
 						// As we want each node has at least 1 running pod
 						for i := 0; i < len(nodeWithAppPodsMap[node]) - 1; i++ {
 							setPodsAnnotationsForNode(nodeWithAppPodsMap[node], i)
+							count++
 						}
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node]) - 1)
 					} else {
 						for i := 0; i < numOfPodsWillBeDownScaledOnNode; i++ {
 							setPodsAnnotationsForNode(nodeWithAppPodsMap[node], i)
+							count++
 						}
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
 					}
+					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %sd", node, count)
 				}
 
 				if TotalOfPodsWillBeDownScaled != 0 {
