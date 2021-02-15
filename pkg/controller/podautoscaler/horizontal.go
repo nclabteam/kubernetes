@@ -109,8 +109,8 @@ type HorizontalController struct {
 	scaleUpEvents   map[string][]timestampedScaleEvent
 	scaleDownEvents map[string][]timestampedScaleEvent
 
-	// Map to store traffic ratio between nodes
-	nodesTrafficRatio map[string]float64
+	// Map to store traffic of nodes
+	nodesTraffic map[string]float64
 }
 
 // NewHorizontalController creates a new HorizontalController.
@@ -171,7 +171,7 @@ func NewHorizontalController(
 	if Clientset == nil {
 		initClientSet()
 	}
-	hpaController.nodesTrafficRatio = testTrafficRatioMapGen()
+	hpaController.nodesTraffic = testTrafficMapGen()
 
 	return hpaController
 }
@@ -675,8 +675,8 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				LabelSelector: workerNodeLabel,
 			})
 			if isDownScale {
-				updateTrafficRatioBetweenNodes(a) // We need to update traffic ratio for nodes whenever downscale happens
-				sortedNodeNamesByRatioValues  := getSortedMapKeysByValue(a.nodesTrafficRatio)
+				updateNodesTraffic(a) // We need to update traffic for nodes whenever downscale happens
+				sortedNodeNamesByTrafficValues := getSortedMapKeysByValue(a.nodesTraffic)
 				TotalOfPodsWillBeDownScaled = currentReplicas - desiredReplicas
 				klog.Infof("phuclh logging => Down Scale: Number of pods will be killed = %d", TotalOfPodsWillBeDownScaled)
 				applicationPodsInCluster := getPodsFromDeploymentName(deploymentName)
@@ -692,33 +692,31 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					}
 					nodeWithAppPodsMap[node.Name] = podsInNode
 				}
-				for _, node := range sortedNodeNamesByRatioValues {
+				copyNodesTrafficMap := make(map[string]float64)
+				for k, v := range a.nodesTraffic {
+					copyNodesTrafficMap[k] = v
+				}
+				for _, node := range sortedNodeNamesByTrafficValues {
 					if TotalOfPodsWillBeDownScaled == 0 {
 						break
 					}
-					if _, exists := nodeWithAppPodsMap[node]; !exists {
-						// We will skip the total key
-						continue
+					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node]/calTotalFromMapValues(copyNodesTrafficMap)))))
+					if numOfPodsWillBeDownScaledOnNode == 0 {
+						numOfPodsWillBeDownScaledOnNode = int(TotalOfPodsWillBeDownScaled)
 					}
-					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (a.nodesTrafficRatio[node])))
 					klog.Infof("$$$Logging calculation result for node %s", node)
 					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d",node, numOfPodsWillBeDownScaledOnNode)
-					count := 0
+					var annotatedPods int32 = 0
 					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node]) - 1 {
 						// As we want each node has at least 1 running pod
-						for i := 0; i < len(nodeWithAppPodsMap[node]) - 1; i++ {
-							setPodsAnnotationsForNode(nodeWithAppPodsMap[node], i)
-							count++
-						}
-						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node]) - 1)
+						annotatedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node]) - 1)
+						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - annotatedPods
 					} else {
-						for i := 0; i < numOfPodsWillBeDownScaledOnNode; i++ {
-							setPodsAnnotationsForNode(nodeWithAppPodsMap[node], i)
-							count++
-						}
-						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
+						annotatedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
+						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - annotatedPods
 					}
-					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, count)
+					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, annotatedPods)
+					delete(copyNodesTrafficMap, node)
 				}
 
 				if TotalOfPodsWillBeDownScaled != 0 {
@@ -739,6 +737,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		_, err = a.scaleNamespacer.Scales(hpa.Namespace).Update(context.TODO(), targetGR, scale, metav1.UpdateOptions{})
 		if err != nil {
 			//TODO if rescale failed => reset pods annotation
+			deleteAllPodsAnnotation(getPodsFromDeploymentName(hpav1Shared.Spec.ScaleTargetRef.Name)) //phuclh
 			a.eventRecorder.Eventf(hpa, v1.EventTypeWarning, "FailedRescale", "New size: %d; reason: %s; error: %v", desiredReplicas, rescaleReason, err.Error())
 			setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionFalse, "FailedUpdateScale", "the HPA controller was unable to update the target scale: %v", err)
 			a.setCurrentReplicasInStatus(hpa, currentReplicas)
@@ -1298,31 +1297,38 @@ func getPodsFromDeploymentName (deploymentName string) *v1.PodList {
 
 }
 
-// Create test traffic ratio map for nodes
-func testTrafficRatioMapGen () map[string]float64 {
+// Create test traffic map for nodes
+func testTrafficMapGen() map[string]float64 {
 	// Get all worker nodes
 	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
 		LabelSelector: "node-role.kubernetes.io/worker=true",
 	})
-	// Init equal ratio for all nodes
-	nodesTrafficRatio := make(map[string]float64)
+	// Init equal traffic for all nodes
+	nodesTraffic := make(map[string]float64)
 	for _, node := range workerNodes.Items {
-		if _, exist := nodesTrafficRatio[node.Name]; exist {
-			nodesTrafficRatio[node.Name] = 1
+		if _, exist := nodesTraffic[node.Name]; exist {
+			nodesTraffic[node.Name] = 1
 		}
 	}
-	nodesTrafficRatio["total"] = float64(len(workerNodes.Items))
 
-	return nodesTrafficRatio
+	return nodesTraffic
 }
 
-func updateTrafficRatioBetweenNodes (hpaController *HorizontalController) {
-
-	//TODO update nodes traffic ratio here by getting information from endpoint on each node
+func updateNodesTraffic(hpaController *HorizontalController) {
+	//TODO update nodes traffic here by getting information from endpoint on each node
 	//The following is just for testing so we hard code
-	hpaController.nodesTrafficRatio["2node2"] = 0.8
-	hpaController.nodesTrafficRatio["3node3"] = 0.2
-
+	// Get all worker nodes
+	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
+		LabelSelector: "node-role.kubernetes.io/worker=true",
+	})
+	for _, workerNode := range workerNodes.Items {
+		if workerNode.Name == "2node2" {
+			hpaController.nodesTraffic[workerNode.Name] = 8
+		}
+		if workerNode.Name == "3node3" {
+			hpaController.nodesTraffic[workerNode.Name] = 2
+		}
+	}
 }
 
 // This func is used to delete -deletePriorityPodAnnotationKey annotation for all pods that have it
@@ -1352,10 +1358,10 @@ func getSortedMapKeysByValue (inputMap map[string]float64) []string {
 		mapKeys = append(mapKeys, key)
 	}
 	sort.Slice(mapKeys, func(i, j int) bool {
-		return inputMap[mapKeys[i]] > inputMap[mapKeys[j]]
+		return inputMap[mapKeys[i]] < inputMap[mapKeys[j]]
 	})
 
-	klog.Info("Sorted keys of ratio map")
+	klog.Info("Sorted keys of traffic map")
 	for i, key := range mapKeys {
 		klog.Infof("- Index %d: %s", i, key)
 	}
@@ -1363,17 +1369,30 @@ func getSortedMapKeysByValue (inputMap map[string]float64) []string {
 	return mapKeys
 }
 
-func setPodsAnnotationsForNode (podsOnNode []v1.Pod, index int) {
-	realPod, _ := Clientset.CoreV1().Pods(podsOnNode[index].Namespace).Get(context.TODO(), podsOnNode[index].Name, metav1.GetOptions{})
-	copyPod := realPod.DeepCopy()
-	annotation := copyPod.ObjectMeta.Annotations
-	if annotation == nil {
-		annotation = make(map[string]string)
+func setPodsAnnotationsForNode (podsOnNode []v1.Pod, iterateRange int) int32 {
+	var count int32 = 0
+	for i := 0; i < iterateRange; i++ {
+		realPod, _ := Clientset.CoreV1().Pods(podsOnNode[iterateRange].Namespace).Get(context.TODO(), podsOnNode[iterateRange].Name, metav1.GetOptions{})
+		copyPod := realPod.DeepCopy()
+		annotation := copyPod.ObjectMeta.Annotations
+		if annotation == nil {
+			annotation = make(map[string]string)
+		}
+		annotation[deletePriorityPodAnnotationKey] = "1"
+		copyPod.ObjectMeta.Annotations = annotation
+		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
+		if error != nil {
+			klog.Fatal("Can not update pod annotation")
+		}
+		count++
 	}
-	annotation[deletePriorityPodAnnotationKey] = "1"
-	copyPod.ObjectMeta.Annotations = annotation
-	_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
-	if error != nil {
-		klog.Fatal("Can not update pod annotation")
-	}
+	return count
 }
+ func calTotalFromMapValues (trafficMap map[string]float64) float64 {
+ 	var result float64
+ 	for _, value := range trafficMap {
+		result += value
+	}
+	return result
+
+ }
