@@ -700,9 +700,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						// We will skip the total key
 						continue
 					}
-					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - a.nodesTrafficRatio[node])))
+					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (a.nodesTrafficRatio[node])))
 					klog.Infof("$$$Logging calculation result for node %s", node)
-					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %sd",node, numOfPodsWillBeDownScaledOnNode)
+					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d",node, numOfPodsWillBeDownScaledOnNode)
 					count := 0
 					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node]) - 1 {
 						// As we want each node has at least 1 running pod
@@ -718,11 +718,11 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						}
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
 					}
-					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %sd", node, count)
+					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, count)
 				}
 
 				if TotalOfPodsWillBeDownScaled != 0 {
-					klog.Infof("Error phuclh: bug bug bug")
+					klog.Infof("Error phuclh: Wrong calculation (after downscaled, total num of pods will be downs caled still not = 0)")
 				}
 
 			} else {
