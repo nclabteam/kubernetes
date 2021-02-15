@@ -1334,16 +1334,20 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 // This func is used to delete -deletePriorityPodAnnotationKey annotation for all pods that have it
 func deleteAllPodsAnnotation (applicationPods *v1.PodList) {
 	for _, pod := range applicationPods.Items {
-		if pod.Annotations != nil {
-			if _, exits := pod.Annotations[deletePriorityPodAnnotationKey]; exits {
-				copyPod := pod.DeepCopy()
-				annotation := copyPod.ObjectMeta.Annotations
-				delete(annotation, deletePriorityPodAnnotationKey)
-				_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
-				if error != nil {
-					klog.Fatal("Can not delete pod annotation")
-				}
-			}
+		realPod, _ := Clientset.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
+		copyPod := realPod.DeepCopy()
+		annotation := copyPod.ObjectMeta.Annotations
+		if pod.Annotations == nil {
+			continue
+		}
+		if _, exits := pod.Annotations[deletePriorityPodAnnotationKey]; !exits {
+			continue
+		}
+		delete(annotation, deletePriorityPodAnnotationKey)
+		copyPod.ObjectMeta.Annotations = annotation
+		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
+		if error != nil {
+			klog.Fatal("Can not delete pod annotation")
 		}
 	}
 }
