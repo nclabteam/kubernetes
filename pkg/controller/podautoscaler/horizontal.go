@@ -696,6 +696,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				for k, v := range a.nodesTraffic {
 					copyNodesTrafficMap[k] = v
 				}
+				//TODO we need to set all pods deletion annotations to 0 value first
 				for _, node := range sortedNodeNamesByTrafficValues {
 					if TotalOfPodsWillBeDownScaled == 0 {
 						break
