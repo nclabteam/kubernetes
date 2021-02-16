@@ -707,16 +707,16 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					}
 					klog.Infof("$$$Logging calculation result for node %s", node)
 					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d",node, numOfPodsWillBeDownScaledOnNode)
-					var annotatedPods int32 = 0
+					deletedPods := 0
 					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node]) - 1 {
 						// As we want each node has at least 1 running pod
-						annotatedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 1)
+						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node]) - 1)
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node]) - 1)
 					} else {
-						annotatedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node]) - numOfPodsWillBeDownScaledOnNode)
+						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
 					}
-					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, annotatedPods)
+					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
 					delete(copyNodesTrafficMap, node)
 				}
 
@@ -1374,25 +1374,32 @@ func getSortedMapKeysByValue (inputMap map[string]float64) []string {
 	return mapKeys
 }
 
-func setPodsAnnotationsForNode (podsOnNode []v1.Pod, iterateRange int) int32 {
-	var count int32 = 0
-	for i := 0; i < iterateRange; i++ {
-		realPod, _ := Clientset.CoreV1().Pods(podsOnNode[iterateRange].Namespace).Get(context.TODO(), podsOnNode[iterateRange].Name, metav1.GetOptions{})
+func setPodsAnnotationsForNode (podsOnNode []v1.Pod, podsToDelete int) int {
+	count := 0
+	for i := 0; i < len(podsOnNode); i++ {
+		realPod, _ := Clientset.CoreV1().Pods(podsOnNode[i].Namespace).Get(context.TODO(), podsOnNode[i].Name, metav1.GetOptions{})
 		copyPod := realPod.DeepCopy()
 		annotation := copyPod.ObjectMeta.Annotations
 		if annotation == nil {
 			annotation = make(map[string]string)
 		}
-		annotation[deletePriorityPodAnnotationKey] = "1"
+		if count < podsToDelete {
+			annotation[deletePriorityPodAnnotationKey] = "1"
+		} else {
+			annotation[deletePriorityPodAnnotationKey] = "0"
+		}
 		copyPod.ObjectMeta.Annotations = annotation
 		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
 		if error != nil {
 			klog.Fatal("Can not update pod annotation")
 		}
-		count++
+		if error == nil && count < podsToDelete {
+			count++
+		}
 	}
 	return count
 }
+
  func calTotalFromMapValues (trafficMap map[string]float64) float64 {
  	var result float64
  	for _, value := range trafficMap {
