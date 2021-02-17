@@ -54,6 +54,7 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	metricsclient "k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
+	random "math/rand"
 )
 
 const deletePriorityPodAnnotationKey = "controller.kubernetes.io/replicaset-downscale-priority"
@@ -702,7 +703,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						break
 					}
 					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node]/calTotalFromMapValues(copyNodesTrafficMap)))))
-					if numOfPodsWillBeDownScaledOnNode == 0 {
+					if len(copyNodesTrafficMap) == 1 {
 						numOfPodsWillBeDownScaledOnNode = int(TotalOfPodsWillBeDownScaled)
 					}
 					klog.Infof("$$$Logging calculation result for node %s", node)
@@ -1322,14 +1323,16 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
 		LabelSelector: "node-role.kubernetes.io/worker=true",
 	})
+	random.Seed(time.Now().UnixNano())
 	for _, workerNode := range workerNodes.Items {
-		if workerNode.Name == "2node2" {
-			hpaController.nodesTraffic[workerNode.Name] = 8
-		}
-		if workerNode.Name == "3node3" {
-			hpaController.nodesTraffic[workerNode.Name] = 2
-		}
+			hpaController.nodesTraffic[workerNode.Name] = float64(random.Intn(10))
 	}
+
+	klog.Info("<===> Random traffic value for each node info")
+	for k, v := range hpaController.nodesTraffic {
+		klog.Infof("** Traffic at Node %s = %f", k, v)
+	}
+
 }
 
 // This func is used to delete -deletePriorityPodAnnotationKey annotation for all pods that have it
