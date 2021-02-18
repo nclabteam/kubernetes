@@ -700,6 +700,10 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				bBeginWithZeroValue := false
 				//TODO we need to set all pods deletion annotations to 0 value first
 				for i, node := range sortedNodeNamesByTrafficValues {
+					if TotalOfPodsWillBeDownScaled == 0 {
+						setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 0)
+						continue
+					}
 					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node] / calTotalFromMapValues(copyNodesTrafficMap)))))
 					if numOfPodsWillBeDownScaledOnNode == 0 && i == 0 {
 						bBeginWithZeroValue = true
@@ -725,9 +729,6 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
 					if !bBeginWithZeroValue {
 						delete(copyNodesTrafficMap, node)
-					}
-					if TotalOfPodsWillBeDownScaled == 0 {
-						break
 					}
 				}
 
@@ -1303,8 +1304,14 @@ func getPodsFromDeploymentName (deploymentName string) *v1.PodList {
 
 	options := metav1.ListOptions{
 		LabelSelector: "app=" + deploymentName,
+
 	}
 	podsList, _ := Clientset.CoreV1().Pods("default").List(context.TODO(),options)
+	for i, pod := range podsList.Items {
+		if pod.Status.Phase != v1.PodRunning {
+			podsList.Items = append(podsList.Items[:i], podsList.Items[i+1:]...)
+		}
+	}
 	return podsList
 
 }
@@ -1396,10 +1403,10 @@ func setPodsAnnotationsForNode (podsOnNode []v1.Pod, podsToDelete int) int {
 		if annotation == nil {
 			annotation = make(map[string]string)
 		}
-		if count < podsToDelete {
-			annotation[deletePriorityPodAnnotationKey] = "1"
-		} else {
+		if podsToDelete == 0 || count >= podsToDelete {
 			annotation[deletePriorityPodAnnotationKey] = "0"
+		} else {
+			annotation[deletePriorityPodAnnotationKey] = "1"
 		}
 		copyPod.ObjectMeta.Annotations = annotation
 		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
