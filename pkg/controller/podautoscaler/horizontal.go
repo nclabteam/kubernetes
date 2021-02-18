@@ -697,28 +697,38 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				for k, v := range a.nodesTraffic {
 					copyNodesTrafficMap[k] = v
 				}
+				bBeginWithZeroValue := false
 				//TODO we need to set all pods deletion annotations to 0 value first
-				for _, node := range sortedNodeNamesByTrafficValues {
-					if TotalOfPodsWillBeDownScaled == 0 {
-						break
+				for i, node := range sortedNodeNamesByTrafficValues {
+					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node] / calTotalFromMapValues(copyNodesTrafficMap)))))
+					if numOfPodsWillBeDownScaledOnNode == 0 && i == 0 {
+						bBeginWithZeroValue = true
 					}
-					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node]/calTotalFromMapValues(copyNodesTrafficMap)))))
-					if len(copyNodesTrafficMap) == 1 {
-						numOfPodsWillBeDownScaledOnNode = int(TotalOfPodsWillBeDownScaled)
+					if bBeginWithZeroValue == true {
+						numOfPodsWillBeDownScaledOnNode = 1
+					} else {
+						if len(copyNodesTrafficMap) == 1 {
+							numOfPodsWillBeDownScaledOnNode = int(TotalOfPodsWillBeDownScaled)
+						}
 					}
 					klog.Infof("$$$Logging calculation result for node %s", node)
-					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d",node, numOfPodsWillBeDownScaledOnNode)
+					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d", node, numOfPodsWillBeDownScaledOnNode)
 					deletedPods := 0
-					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node]) - 1 {
+					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node])-1 {
 						// As we want each node has at least 1 running pod
-						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node]) - 1)
-						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node]) - 1)
+						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node])-1)
+						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node])-1)
 					} else {
 						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
 						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
 					}
 					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
-					delete(copyNodesTrafficMap, node)
+					if !bBeginWithZeroValue {
+						delete(copyNodesTrafficMap, node)
+					}
+					if TotalOfPodsWillBeDownScaled == 0 {
+						break
+					}
 				}
 
 				if TotalOfPodsWillBeDownScaled != 0 {
