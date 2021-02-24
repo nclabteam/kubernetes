@@ -24,6 +24,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	"math"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
@@ -54,16 +56,16 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"k8s.io/kubernetes/pkg/controller"
 	metricsclient "k8s.io/kubernetes/pkg/controller/podautoscaler/metrics"
-	random "math/rand"
 )
 
 const deletePriorityPodAnnotationKey = "controller.kubernetes.io/replicaset-downscale-priority"
 const workerNodeLabel = "node-role.kubernetes.io/worker=true"
+
 var (
 	scaleUpLimitFactor  = 2.0
 	scaleUpLimitMinimum = 4.0
-	Config    *rest.Config
-	Clientset *kubernetes.Clientset
+	Config              *rest.Config
+	Clientset           *kubernetes.Clientset
 )
 
 type timestampedRecommendation struct {
@@ -741,6 +743,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				TotalOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
 				klog.Infof("phuclh logging => Up Scale: Number of pods will be scaled = %d", TotalOfPodsWillBeDownScaled)
 				klog.Infof("phuclh logging => Up Scale: Up scaling deployment %s", deploymentName)
+				updateNodesTraffic(a)
 			}
 		}
 	}
@@ -1300,13 +1303,12 @@ func initClientSet() {
 }
 
 // getPodsFromDeploymentName (deploymentName string) *v1.PodList is used to get all pods managed be deployment "deploymentName"
-func getPodsFromDeploymentName (deploymentName string) *v1.PodList {
+func getPodsFromDeploymentName(deploymentName string) *v1.PodList {
 
 	options := metav1.ListOptions{
 		LabelSelector: "app=" + deploymentName,
-
 	}
-	podsList, _ := Clientset.CoreV1().Pods("default").List(context.TODO(),options)
+	podsList, _ := Clientset.CoreV1().Pods("default").List(context.TODO(), options)
 	for i, pod := range podsList.Items {
 		if pod.Status.Phase != v1.PodRunning {
 			podsList.Items = append(podsList.Items[:i], podsList.Items[i+1:]...)
@@ -1340,12 +1342,17 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
 		LabelSelector: "node-role.kubernetes.io/worker=true",
 	})
-	random.Seed(time.Now().UnixNano())
+	// Here we use random traffic for testing
+	//random.Seed(time.Now().UnixNano())
+	//for _, workerNode := range workerNodes.Items {
+	//	hpaController.nodesTraffic[workerNode.Name] = float64(random.Intn(10))
+	//}
+	hpaController.nodesTraffic = make(map[string]float64)
 	for _, workerNode := range workerNodes.Items {
-			hpaController.nodesTraffic[workerNode.Name] = float64(random.Intn(10))
+		hpaController.nodesTraffic[workerNode.Name] = getNodesTrafficInfoFromEndpoints(workerNode.Name)
 	}
 
-	klog.Info("<===> Random traffic value for each node info")
+	klog.Info("<===> Traffic value for each node info (From EPs)")
 	for k, v := range hpaController.nodesTraffic {
 		klog.Infof("** Traffic at Node %s = %f", k, v)
 	}
@@ -1353,7 +1360,7 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 }
 
 // This func is used to delete -deletePriorityPodAnnotationKey annotation for all pods that have it
-func deleteAllPodsAnnotation (applicationPods *v1.PodList) {
+func deleteAllPodsAnnotation(applicationPods *v1.PodList) {
 	for _, pod := range applicationPods.Items {
 		realPod, _ := Clientset.CoreV1().Pods(pod.Namespace).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 		copyPod := realPod.DeepCopy()
@@ -1374,7 +1381,7 @@ func deleteAllPodsAnnotation (applicationPods *v1.PodList) {
 }
 
 // This func is used to sort map keys by their values
-func getSortedMapKeysByValue (inputMap map[string]float64) []string {
+func getSortedMapKeysByValue(inputMap map[string]float64) []string {
 	mapKeys := make([]string, 0, len(inputMap))
 	for key := range inputMap {
 		mapKeys = append(mapKeys, key)
@@ -1391,7 +1398,7 @@ func getSortedMapKeysByValue (inputMap map[string]float64) []string {
 	return mapKeys
 }
 
-func setPodsAnnotationsForNode (podsOnNode []v1.Pod, podsToDelete int) int {
+func setPodsAnnotationsForNode(podsOnNode []v1.Pod, podsToDelete int) int {
 	count := 0
 	for i := 0; i < len(podsOnNode); i++ {
 		realPod, _ := Clientset.CoreV1().Pods(podsOnNode[i].Namespace).Get(context.TODO(), podsOnNode[i].Name, metav1.GetOptions{})
@@ -1417,11 +1424,48 @@ func setPodsAnnotationsForNode (podsOnNode []v1.Pod, podsToDelete int) int {
 	return count
 }
 
- func calTotalFromMapValues (trafficMap map[string]float64) float64 {
- 	var result float64
- 	for _, value := range trafficMap {
+func calTotalFromMapValues(trafficMap map[string]float64) float64 {
+	var result float64
+	for _, value := range trafficMap {
 		result += value
 	}
 	return result
 
- }
+}
+
+func getNodesTrafficInfoFromEndpoints(workerNodeName string) float64 {
+	appName := "app-example1"
+	realEPName := ""
+	endpoints, _ := Clientset.CoreV1().Endpoints("default").List(context.TODO(), metav1.ListOptions{})
+	for _, ep := range endpoints.Items {
+		if strings.Contains(ep.Name, workerNodeName) && strings.Contains(ep.Name, appName) {
+			realEPName = ep.Name
+		}
+	}
+	if realEPName == "" {
+		klog.Infof("EP name = empty")
+		return 0
+	}
+	realEP, _ := Clientset.CoreV1().Endpoints("default").Get(context.TODO(), realEPName, metav1.GetOptions{})
+	annotation := realEP.ObjectMeta.Annotations
+	if annotation == nil {
+		klog.Infof("EP %s does not have traffic info annotations", realEPName)
+		return 0
+	}
+	trafficValue, err := strconv.ParseFloat(annotation["numRequests"], 64)
+	klog.Infof("Traffic value from ep %s = %f", realEPName, trafficValue)
+	if err != nil {
+		klog.Fatalf("Can not parse traffic value from EP %s", realEPName)
+		return 0
+	}
+	return trafficValue
+}
+
+func stringInSlice(a string, list []string) bool {
+	for _, b := range list {
+		if b == a {
+			return true
+		}
+	}
+	return false
+}
