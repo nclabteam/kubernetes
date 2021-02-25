@@ -708,6 +708,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					equalizeNodeTraffic(a)
 				}
 				for i, node := range sortedNodeNamesByTrafficValues {
+					//TODO Should we check that node has only 1 pod => If so, we need to skip this node
 					if TotalOfPodsWillBeDownScaled == 0 {
 						setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 0)
 						continue
