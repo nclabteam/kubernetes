@@ -1452,12 +1452,16 @@ func getNodesTrafficInfoFromEndpoints(workerNodeName string) float64 {
 		klog.Infof("EP %s does not have traffic info annotations", realEPName)
 		return 0
 	}
-	trafficValue, err := strconv.ParseFloat(annotation["numRequests"], 64)
+	curNumRequests, _ := strconv.Atoi(annotation["numRequests"])
+	oldNumRequests, _ := strconv.Atoi(annotation["oldNumRequests"])
+	trafficValue := float64(curNumRequests - oldNumRequests)
 	klog.Infof("Traffic value from ep %s = %f", realEPName, trafficValue)
-	if err != nil {
-		klog.Fatalf("Can not parse traffic value from EP %s", realEPName)
-		return 0
+	annotation["reset"] = "true"
+	_, error := Clientset.CoreV1().Endpoints("default").Update(context.TODO(), realEP, metav1.UpdateOptions{})
+	if error == nil {
+		klog.Infof("Can not update old num requests for EP %s", realEP.Name)
 	}
+
 	return trafficValue
 }
 
