@@ -60,6 +60,7 @@ import (
 
 const deletePriorityPodAnnotationKey = "controller.kubernetes.io/replicaset-downscale-priority"
 const workerNodeLabel = "node-role.kubernetes.io/worker=true"
+const EPS = 0.1
 
 var (
 	scaleUpLimitFactor  = 2.0
@@ -701,12 +702,17 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				}
 				bBeginWithZeroValue := false
 				//TODO we need to set all pods deletion annotations to 0 value first
+				sumTrafficMapValues := calTotalFromMapValues(copyNodesTrafficMap)
+				if sumTrafficMapValues - EPS < 0 {
+					klog.Info("XXX => Notice: All nodes traffic == 0")
+					equalizeNodeTraffic(a)
+				}
 				for i, node := range sortedNodeNamesByTrafficValues {
 					if TotalOfPodsWillBeDownScaled == 0 {
 						setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 0)
 						continue
 					}
-					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node] / calTotalFromMapValues(copyNodesTrafficMap)))))
+					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node] / sumTrafficMapValues))))
 					if numOfPodsWillBeDownScaledOnNode == 0 && i == 0 {
 						bBeginWithZeroValue = true
 					}
@@ -743,7 +749,6 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				TotalOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
 				klog.Infof("phuclh logging => Up Scale: Number of pods will be scaled = %d", TotalOfPodsWillBeDownScaled)
 				klog.Infof("phuclh logging => Up Scale: Up scaling deployment %s", deploymentName)
-				updateNodesTraffic(a)
 			}
 		}
 	}
@@ -1359,6 +1364,12 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 
 }
 
+func equalizeNodeTraffic(hpaController *HorizontalController) {
+	for nodeName, _ := range hpaController.nodesTraffic {
+		hpaController.nodesTraffic[nodeName] = 1.0
+	}
+}
+
 // This func is used to delete -deletePriorityPodAnnotationKey annotation for all pods that have it
 func deleteAllPodsAnnotation(applicationPods *v1.PodList) {
 	for _, pod := range applicationPods.Items {
@@ -1458,7 +1469,7 @@ func getNodesTrafficInfoFromEndpoints(workerNodeName string) float64 {
 	klog.Infof("Traffic value from ep %s = %f", realEPName, trafficValue)
 	annotation["reset"] = "true"
 	_, error := Clientset.CoreV1().Endpoints("default").Update(context.TODO(), realEP, metav1.UpdateOptions{})
-	if error == nil {
+	if error != nil {
 		klog.Infof("Can not update old num requests for EP %s", realEP.Name)
 	}
 
