@@ -706,6 +706,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				if sumTrafficMapValues - EPS < 0 {
 					klog.Info("XXX => Notice: All nodes traffic == 0")
 					equalizeNodeTraffic(a)
+					sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
 				}
 				for i, node := range sortedNodeNamesByTrafficValues {
 					//TODO Should we check that node has only 1 pod => If so, we need to skip this node
