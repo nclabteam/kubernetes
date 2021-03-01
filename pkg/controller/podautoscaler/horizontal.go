@@ -772,6 +772,8 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededRescale", "the HPA controller was able to update the target scale to %d", desiredReplicas)
 		a.eventRecorder.Eventf(hpa, v1.EventTypeNormal, "SuccessfulRescale", "New size: %d; reason: %s", desiredReplicas, rescaleReason)
 		a.storeScaleEvent(hpa.Spec.Behavior, key, currentReplicas, desiredReplicas)
+		a.eventRecorder.Eventf(hpa, v1.EventTypeNormal, "SuccessfulRescale", "Successful rescale of %s, old size: %d, new size: %d, reason: %s",
+			hpa.Name, currentReplicas, desiredReplicas, rescaleReason)
 		klog.Infof("Successful rescale of %s, old size: %d, new size: %d, reason: %s",
 			hpa.Name, currentReplicas, desiredReplicas, rescaleReason)
 	} else {
