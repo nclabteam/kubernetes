@@ -705,7 +705,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				sumTrafficMapValues := calTotalFromMapValues(copyNodesTrafficMap)
 				if sumTrafficMapValues - EPS < 0 {
 					klog.Info("XXX => Notice: All nodes traffic == 0")
-					equalizeNodeTraffic(a)
+					equalizeNodeTraffic(copyNodesTrafficMap)
 					sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
 				}
 				for i, node := range sortedNodeNamesByTrafficValues {
@@ -1351,16 +1351,10 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 	workerNodes, _ := Clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{
 		LabelSelector: "node-role.kubernetes.io/worker=true",
 	})
-	// Here we use random traffic for testing
-	//random.Seed(time.Now().UnixNano())
-	//for _, workerNode := range workerNodes.Items {
-	//	hpaController.nodesTraffic[workerNode.Name] = float64(random.Intn(10))
-	//}
 	hpaController.nodesTraffic = make(map[string]float64)
 	for _, workerNode := range workerNodes.Items {
 		hpaController.nodesTraffic[workerNode.Name] = getNodesTrafficInfoFromEndpoints(workerNode.Name)
 	}
-
 	klog.Info("<===> Traffic value for each node info (From EPs)")
 	for k, v := range hpaController.nodesTraffic {
 		klog.Infof("** Traffic at Node %s = %f", k, v)
@@ -1368,9 +1362,9 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 
 }
 
-func equalizeNodeTraffic(hpaController *HorizontalController) {
-	for nodeName, _ := range hpaController.nodesTraffic {
-		hpaController.nodesTraffic[nodeName] = 1.0
+func equalizeNodeTraffic(nodesTrafficMap map[string]float64) {
+	for nodeName, _ := range nodesTrafficMap {
+		nodesTrafficMap[nodeName] = 1.0
 	}
 }
 
