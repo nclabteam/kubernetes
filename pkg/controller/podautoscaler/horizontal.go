@@ -700,15 +700,18 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				for k, v := range a.nodesTraffic {
 					copyNodesTrafficMap[k] = v
 				}
+				bUseDefaultDownscale := false
 				bBeginWithZeroValue := false
 				//TODO we need to set all pods deletion annotations to 0 value first
 				sumTrafficMapValues := calTotalFromMapValues(copyNodesTrafficMap)
 				if sumTrafficMapValues - EPS < 0 {
 					klog.Info("XXX => Notice: All nodes traffic == 0")
-					equalizeNodeTraffic(copyNodesTrafficMap)
-					sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+					bUseDefaultDownscale = true
 				}
 				for i, node := range sortedNodeNamesByTrafficValues {
+					if bUseDefaultDownscale {
+						break
+					}
 					//TODO Should we check that node has only 1 pod => If so, we need to skip this node
 					if TotalOfPodsWillBeDownScaled == 0 {
 						setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 0)
@@ -742,7 +745,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					}
 				}
 
-				if TotalOfPodsWillBeDownScaled != 0 {
+				if TotalOfPodsWillBeDownScaled != 0 && !bUseDefaultDownscale {
 					klog.Infof("Error phuclh: Wrong calculation (after downscaled, total num of pods will be downs caled still not = 0)")
 				}
 
