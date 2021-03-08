@@ -680,13 +680,16 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 			})
 			if isDownScale {
 				updateNodesTraffic(a) // We need to update traffic for nodes whenever downscale happens
-				sortedNodeNamesByTrafficValues := getSortedMapKeysByValue(a.nodesTraffic)
+				sortedNodeNamesByTrafficValues := getSortedMapKeysByTrafficValueAsc(a.nodesTraffic)
+				sortedNodeNamesByTrafficValuesDesc := getSortedMapKeysByTrafficValueDesc(a.nodesTraffic)
 				TotalOfPodsWillBeDownScaled = currentReplicas - desiredReplicas
 				klog.Infof("phuclh logging => Down Scale: Number of pods will be killed = %d", TotalOfPodsWillBeDownScaled)
 				applicationPodsInCluster := getPodsFromDeploymentName(deploymentName)
 				deleteAllPodsAnnotation(applicationPodsInCluster)
 				// map pods with node
 				nodeWithAppPodsMap := make(map[string][]v1.Pod)
+				copyNodesTrafficMap := make(map[string]float64)
+				remainingPodsOnNodeMap := make(map[string]int)
 				for _, node := range nodesList.Items {
 					podsInNode := make([]v1.Pod, 0)
 					for _, pod := range applicationPodsInCluster.Items {
@@ -696,52 +699,71 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					}
 					nodeWithAppPodsMap[node.Name] = podsInNode
 				}
-				copyNodesTrafficMap := make(map[string]float64)
-				for k, v := range a.nodesTraffic {
-					copyNodesTrafficMap[k] = v
+				for index, nodeName := range sortedNodeNamesByTrafficValues {
+					copyNodesTrafficMap[nodeName] = a.nodesTraffic[sortedNodeNamesByTrafficValuesDesc[index]]
 				}
-				bBeginWithZeroValue := false
+				for k, v := range nodeWithAppPodsMap {
+					remainingPodsOnNodeMap[k] = len(v) //so pod chua downscale tren node
+				}
+				bAllNodesHasSameTrafficValue := false
 				//TODO we need to set all pods deletion annotations to 0 value first
 				sumTrafficMapValues := calTotalFromMapValues(copyNodesTrafficMap)
 				if sumTrafficMapValues - EPS < 0 {
 					klog.Info("XXX => Notice: All nodes traffic == 0")
 					equalizeNodeTraffic(copyNodesTrafficMap)
 					sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+					bAllNodesHasSameTrafficValue = true
 				}
-				for i, node := range sortedNodeNamesByTrafficValues {
-					//TODO Should we check that node has only 1 pod => If so, we need to skip this node
-					if TotalOfPodsWillBeDownScaled == 0 {
-						setPodsAnnotationsForNode(nodeWithAppPodsMap[node], 0)
-						continue
+				for nodeName, podsOnNodeList := range nodeWithAppPodsMap {
+					if len(podsOnNodeList) < 2 {
+						setPodsAnnotationsForNode(nodeWithAppPodsMap[nodeName],0)
+						delete(copyNodesTrafficMap, nodeName)
+						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
 					}
-					numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (1 - (copyNodesTrafficMap[node] / sumTrafficMapValues))))
-					if numOfPodsWillBeDownScaledOnNode == 0 && i == 0 {
-						bBeginWithZeroValue = true
-					}
-					if bBeginWithZeroValue == true {
-						numOfPodsWillBeDownScaledOnNode = 1
-					} else {
-						if len(copyNodesTrafficMap) == 1 {
-							numOfPodsWillBeDownScaledOnNode = int(TotalOfPodsWillBeDownScaled)
+				}
+				sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+				for TotalOfPodsWillBeDownScaled > 0 {
+					needDeleteNodeWith1Pods := make([]string,0)
+					klog.Infof("Size of sortedNodeNamesByTrafficValues = %d", len(sortedNodeNamesByTrafficValues))
+					for i, node := range sortedNodeNamesByTrafficValues {
+						//TODO Should we check that node has only 1 pod => If so, we need to skip this node
+						if TotalOfPodsWillBeDownScaled == 0 {
+							break
 						}
+						numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (copyNodesTrafficMap[node] / sumTrafficMapValues)))
+						if i == 0 && numOfPodsWillBeDownScaledOnNode == 0 {
+							bAllNodesHasSameTrafficValue = true
+						}
+						if bAllNodesHasSameTrafficValue == true {
+							numOfPodsWillBeDownScaledOnNode = 1
+						}
+						klog.Infof("$$$Logging calculation result for node %s", node)
+						klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d", node, numOfPodsWillBeDownScaledOnNode)
+						deletedPods := 0
+						if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node])-1 {
+							// As we want each node has at least 1 running pod
+							deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node])-1)
+							remainingPodsOnNodeMap[node] = remainingPodsOnNodeMap[node] - (len(nodeWithAppPodsMap[node])-1)
+							TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node])-1)
+							// ***3*** should be here????
+						} else {
+							deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
+							remainingPodsOnNodeMap[node] = remainingPodsOnNodeMap[node] - (numOfPodsWillBeDownScaledOnNode)
+							TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
+						}
+						// Handle node only have 1 pod after downscale
+						/// ***3***
+						if remainingPodsOnNodeMap[node] < 2 {
+							needDeleteNodeWith1Pods = append(needDeleteNodeWith1Pods, node)
+							delete(copyNodesTrafficMap, node)
+							sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+						}
+						klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
 					}
-					klog.Infof("$$$Logging calculation result for node %s", node)
-					klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d", node, numOfPodsWillBeDownScaledOnNode)
-					deletedPods := 0
-					if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node])-1 {
-						// As we want each node has at least 1 running pod
-						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node])-1)
-						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node])-1)
-					} else {
-						deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
-						TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
-					}
-					klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
-					if !bBeginWithZeroValue {
-						delete(copyNodesTrafficMap, node)
+					for _, nodeName := range needDeleteNodeWith1Pods {
+						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
 					}
 				}
-
 				if TotalOfPodsWillBeDownScaled != 0 {
 					klog.Infof("Error phuclh: Wrong calculation (after downscaled, total num of pods will be downs caled still not = 0)")
 				}
@@ -1390,7 +1412,7 @@ func deleteAllPodsAnnotation(applicationPods *v1.PodList) {
 }
 
 // This func is used to sort map keys by their values
-func getSortedMapKeysByValue(inputMap map[string]float64) []string {
+func getSortedMapKeysByTrafficValueAsc(inputMap map[string]float64) []string {
 	mapKeys := make([]string, 0, len(inputMap))
 	for key := range inputMap {
 		mapKeys = append(mapKeys, key)
@@ -1399,7 +1421,25 @@ func getSortedMapKeysByValue(inputMap map[string]float64) []string {
 		return inputMap[mapKeys[i]] < inputMap[mapKeys[j]]
 	})
 
-	klog.Info("Sorted keys of traffic map")
+	klog.Info("Sorted keys of traffic map asc")
+	for i, key := range mapKeys {
+		klog.Infof("- Index %d: %s", i, key)
+	}
+
+	return mapKeys
+}
+
+// This func is used to sort map keys by their values
+func getSortedMapKeysByTrafficValueDesc(inputMap map[string]float64) []string {
+	mapKeys := make([]string, 0, len(inputMap))
+	for key := range inputMap {
+		mapKeys = append(mapKeys, key)
+	}
+	sort.Slice(mapKeys, func(i, j int) bool {
+		return inputMap[mapKeys[i]] > inputMap[mapKeys[j]]
+	})
+
+	klog.Info("Sorted keys of traffic map desc")
 	for i, key := range mapKeys {
 		klog.Infof("- Index %d: %s", i, key)
 	}
@@ -1416,18 +1456,30 @@ func setPodsAnnotationsForNode(podsOnNode []v1.Pod, podsToDelete int) int {
 		if annotation == nil {
 			annotation = make(map[string]string)
 		}
-		if podsToDelete == 0 || count >= podsToDelete {
-			annotation[deletePriorityPodAnnotationKey] = "0"
+		if _, exist := annotation[deletePriorityPodAnnotationKey]; exist {
+			if count == podsToDelete {
+				break
+			}
+			// neu da update 1 lan cho tat ca pod va day la lan thu 2 - xay ra trong truong hop tang tung pod cho moi node
+			if annotation[deletePriorityPodAnnotationKey] == "1" {
+				continue
+			} else {
+				annotation[deletePriorityPodAnnotationKey] = "1"
+				count++
+			}
 		} else {
-			annotation[deletePriorityPodAnnotationKey] = "1"
+			// Normal
+			if podsToDelete == 0 || count >= podsToDelete {
+				annotation[deletePriorityPodAnnotationKey] = "0"
+			} else {
+				annotation[deletePriorityPodAnnotationKey] = "1"
+				count++
+			}
 		}
 		copyPod.ObjectMeta.Annotations = annotation
 		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
 		if error != nil {
 			klog.Fatal("Can not update pod annotation")
-		}
-		if error == nil && count < podsToDelete {
-			count++
 		}
 	}
 	return count
@@ -1481,4 +1533,13 @@ func stringInSlice(a string, list []string) bool {
 		}
 	}
 	return false
+}
+
+func removeStringFromSlice(s []string, r string) []string {
+	for i, v := range s {
+		if v == r {
+			return append(s[:i], s[i+1:]...)
+		}
+	}
+	return s
 }
