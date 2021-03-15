@@ -176,7 +176,6 @@ func NewHorizontalController(
 		initClientSet()
 	}
 	hpaController.nodesTraffic = testTrafficMapGen()
-
 	return hpaController
 }
 
@@ -211,7 +210,6 @@ func (a *HorizontalController) enqueueHPA(obj interface{}) {
 		utilruntime.HandleError(fmt.Errorf("couldn't get key for object %+v: %v", obj, err))
 		return
 	}
-
 	// Requests are always added to queue with resyncPeriod delay.  If there's already
 	// request for the HPA in the queue then a new request is always dropped. Requests spend resync
 	// interval in queue so HPAs are processed every resync interval.
@@ -679,7 +677,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				LabelSelector: workerNodeLabel,
 			})
 			if isDownScale {
-				updateNodesTraffic(a) // We need to update traffic for nodes whenever downscale happens
+				updateNodesTraffic(a, deploymentName) // We need to update traffic for nodes whenever downscale happens
 				sortedNodeNamesByTrafficValues := getSortedMapKeysByTrafficValueAsc(a.nodesTraffic)
 				sortedNodeNamesByTrafficValuesDesc := getSortedMapKeysByTrafficValueDesc(a.nodesTraffic)
 				TotalOfPodsWillBeDownScaled = currentReplicas - desiredReplicas
@@ -699,6 +697,13 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					}
 					nodeWithAppPodsMap[node.Name] = podsInNode
 				}
+				for nodeName, podsOnNodeList := range nodeWithAppPodsMap {
+					if len(podsOnNodeList) < 2 {
+						setPodsAnnotationsForNode(nodeWithAppPodsMap[nodeName],0)
+						delete(copyNodesTrafficMap, nodeName)
+						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
+					}
+				}
 				for index, nodeName := range sortedNodeNamesByTrafficValues {
 					copyNodesTrafficMap[nodeName] = a.nodesTraffic[sortedNodeNamesByTrafficValuesDesc[index]]
 				}
@@ -714,27 +719,19 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
 					bAllNodesHasSameTrafficValue = true
 				}
-				for nodeName, podsOnNodeList := range nodeWithAppPodsMap {
-					if len(podsOnNodeList) < 2 {
-						setPodsAnnotationsForNode(nodeWithAppPodsMap[nodeName],0)
-						delete(copyNodesTrafficMap, nodeName)
-						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
-					}
-				}
 				sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
 				for TotalOfPodsWillBeDownScaled > 0 {
 					needDeleteNodeWith1Pods := make([]string,0)
-					klog.Infof("Size of sortedNodeNamesByTrafficValues = %d", len(sortedNodeNamesByTrafficValues))
 					for i, node := range sortedNodeNamesByTrafficValues {
 						//TODO Should we check that node has only 1 pod => If so, we need to skip this node
-						if TotalOfPodsWillBeDownScaled == 0 {
-							break
-						}
 						numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (copyNodesTrafficMap[node] / sumTrafficMapValues)))
 						if i == 0 && numOfPodsWillBeDownScaledOnNode == 0 {
 							bAllNodesHasSameTrafficValue = true
 						}
 						if bAllNodesHasSameTrafficValue == true {
+							numOfPodsWillBeDownScaledOnNode = 1
+						}
+						if len(copyNodesTrafficMap) == 1 {
 							numOfPodsWillBeDownScaledOnNode = 1
 						}
 						klog.Infof("$$$Logging calculation result for node %s", node)
@@ -757,6 +754,10 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 							needDeleteNodeWith1Pods = append(needDeleteNodeWith1Pods, node)
 							delete(copyNodesTrafficMap, node)
 							sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+							if sumTrafficMapValues - EPS < 0 {
+								equalizeNodeTraffic(copyNodesTrafficMap)
+								sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+							}
 						}
 						klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
 					}
@@ -767,7 +768,6 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				if TotalOfPodsWillBeDownScaled != 0 {
 					klog.Infof("Error phuclh: Wrong calculation (after downscaled, total num of pods will be downs caled still not = 0)")
 				}
-
 			} else {
 				//TODO if we need to handle upscale => Handle here
 				TotalOfPodsWillBeDownScaled = desiredReplicas - currentReplicas
@@ -1366,7 +1366,7 @@ func testTrafficMapGen() map[string]float64 {
 	return nodesTraffic
 }
 
-func updateNodesTraffic(hpaController *HorizontalController) {
+func updateNodesTraffic(hpaController *HorizontalController, deploymentName string) {
 	//TODO update nodes traffic here by getting information from endpoint on each node
 	//The following is just for testing so we hard code
 	// Get all worker nodes
@@ -1375,7 +1375,7 @@ func updateNodesTraffic(hpaController *HorizontalController) {
 	})
 	hpaController.nodesTraffic = make(map[string]float64)
 	for _, workerNode := range workerNodes.Items {
-		hpaController.nodesTraffic[workerNode.Name] = getNodesTrafficInfoFromEndpoints(workerNode.Name)
+		hpaController.nodesTraffic[workerNode.Name] = getNodesTrafficInfoFromEndpoints(deploymentName, workerNode.Name)
 	}
 	klog.Info("<===> Traffic value for each node info (From EPs)")
 	for k, v := range hpaController.nodesTraffic {
@@ -1494,12 +1494,11 @@ func calTotalFromMapValues(trafficMap map[string]float64) float64 {
 
 }
 
-func getNodesTrafficInfoFromEndpoints(workerNodeName string) float64 {
-	appName := "app-example1"
+func getNodesTrafficInfoFromEndpoints(deploymentName string, workerNodeName string) float64 {
 	realEPName := ""
 	endpoints, _ := Clientset.CoreV1().Endpoints("default").List(context.TODO(), metav1.ListOptions{})
 	for _, ep := range endpoints.Items {
-		if strings.Contains(ep.Name, workerNodeName) && strings.Contains(ep.Name, appName) {
+		if strings.Contains(ep.Name, workerNodeName) && strings.Contains(ep.Name, deploymentName) {
 			realEPName = ep.Name
 		}
 	}
