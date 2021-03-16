@@ -723,6 +723,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				for TotalOfPodsWillBeDownScaled > 0 {
 					needDeleteNodeWith1Pods := make([]string,0)
 					for i, node := range sortedNodeNamesByTrafficValues {
+						if TotalOfPodsWillBeDownScaled == 0 {
+							break
+						}
 						//TODO Should we check that node has only 1 pod => If so, we need to skip this node
 						numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (copyNodesTrafficMap[node] / sumTrafficMapValues)))
 						if i == 0 && numOfPodsWillBeDownScaledOnNode == 0 {
