@@ -684,6 +684,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				klog.Infof("phuclh logging => Down Scale: Number of pods will be killed = %d", TotalOfPodsWillBeDownScaled)
 				applicationPodsInCluster := getPodsFromDeploymentName(deploymentName)
 				deleteAllPodsAnnotation(applicationPodsInCluster)
+				//TODO should set all pods annotation value to 0 here to prevent wrong downscale :D
 				// map pods with node
 				nodeWithAppPodsMap := make(map[string][]v1.Pod)
 				copyNodesTrafficMap := make(map[string]float64)
