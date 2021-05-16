@@ -647,8 +647,9 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 
 		rescaleMetric := ""
 		isDownScale := false
-		var TotalOfPodsWillBeDownScaled int32 = 0 // pods diff between desire and current
-		_ = TotalOfPodsWillBeDownScaled           // This just for preventing unused error
+		//var TotalOfPodsWillBeDownScaled int32 = 0 // pods diff between desire and current
+		//_ = TotalOfPodsWillBeDownScaled           // This just for preventing unused error
+		TotalOfPodsWillBeDownScaled := int32(0)
 		if metricDesiredReplicas > desiredReplicas {
 			desiredReplicas = metricDesiredReplicas
 			rescaleMetric = metricName
@@ -699,8 +700,8 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					nodeWithAppPodsMap[node.Name] = podsInNode
 				}
 				for nodeName, podsOnNodeList := range nodeWithAppPodsMap {
+					setPodsAnnotationsForNode(nodeWithAppPodsMap[nodeName],0)
 					if len(podsOnNodeList) < 2 {
-						setPodsAnnotationsForNode(nodeWithAppPodsMap[nodeName],0)
 						delete(copyNodesTrafficMap, nodeName)
 						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
 					}
@@ -721,12 +722,17 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 					bAllNodesHasSameTrafficValue = true
 				}
 				sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
+				remainingPodsToDownscale := TotalOfPodsWillBeDownScaled
 				for TotalOfPodsWillBeDownScaled > 0 {
 					needDeleteNodeWith1Pods := make([]string,0)
+					if remainingPodsToDownscale == 0 {
+						break
+					}
+					TotalOfPodsWillBeDownScaled = remainingPodsToDownscale
 					for i, node := range sortedNodeNamesByTrafficValues {
-						if TotalOfPodsWillBeDownScaled == 0 {
-							break
-						}
+						//if TotalOfPodsWillBeDownScaled == 0 {
+						//	break
+						//} Phuc 20210507 debug
 						//TODO Should we check that node has only 1 pod => If so, we need to skip this node
 						numOfPodsWillBeDownScaledOnNode := int(math.RoundToEven(float64(TotalOfPodsWillBeDownScaled) * (copyNodesTrafficMap[node] / sumTrafficMapValues)))
 						if i == 0 && numOfPodsWillBeDownScaledOnNode == 0 {
@@ -739,21 +745,23 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 							numOfPodsWillBeDownScaledOnNode = 1
 						}
 						klog.Infof("$$$Logging calculation result for node %s", node)
+						klog.Infof("Node %s has %d pods", node, remainingPodsOnNodeMap[node])
 						klog.Infof("(Expected) Num of pods will be down scaled on node %s = %d", node, numOfPodsWillBeDownScaledOnNode)
 						deletedPods := 0
 						if numOfPodsWillBeDownScaledOnNode > len(nodeWithAppPodsMap[node])-1 {
 							// As we want each node has at least 1 running pod
 							deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], len(nodeWithAppPodsMap[node])-1)
 							remainingPodsOnNodeMap[node] = remainingPodsOnNodeMap[node] - (len(nodeWithAppPodsMap[node])-1)
-							TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(len(nodeWithAppPodsMap[node])-1)
-							// ***3*** should be here????
+							remainingPodsToDownscale = remainingPodsToDownscale - int32(len(nodeWithAppPodsMap[node])-1)
 						} else {
 							deletedPods = setPodsAnnotationsForNode(nodeWithAppPodsMap[node], numOfPodsWillBeDownScaledOnNode)
 							remainingPodsOnNodeMap[node] = remainingPodsOnNodeMap[node] - (numOfPodsWillBeDownScaledOnNode)
-							TotalOfPodsWillBeDownScaled = TotalOfPodsWillBeDownScaled - int32(numOfPodsWillBeDownScaledOnNode)
+							remainingPodsToDownscale = remainingPodsToDownscale - int32(numOfPodsWillBeDownScaledOnNode) // Should we decrease the total pods to downscale
 						}
-						// Handle node only have 1 pod after downscale
-						/// ***3***
+						klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
+						if remainingPodsToDownscale == 0 {
+							break
+						}
 						if remainingPodsOnNodeMap[node] < 2 {
 							needDeleteNodeWith1Pods = append(needDeleteNodeWith1Pods, node)
 							delete(copyNodesTrafficMap, node)
@@ -763,11 +771,12 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 								sumTrafficMapValues = calTotalFromMapValues(copyNodesTrafficMap)
 							}
 						}
-						klog.Infof("(Actual) Num of pods will be down scaled on node %s = %d", node, deletedPods)
 					}
+					klog.Infof("Remaining pods to downscale = %d", remainingPodsToDownscale)
 					for _, nodeName := range needDeleteNodeWith1Pods {
 						sortedNodeNamesByTrafficValues = removeStringFromSlice(sortedNodeNamesByTrafficValues, nodeName)
 					}
+					klog.Info("Finsh 1st loop")
 				}
 				if TotalOfPodsWillBeDownScaled != 0 {
 					klog.Infof("Error phuclh: Wrong calculation (after downscaled, total num of pods will be downs caled still not = 0)")
@@ -1460,30 +1469,27 @@ func setPodsAnnotationsForNode(podsOnNode []v1.Pod, podsToDelete int) int {
 		if annotation == nil {
 			annotation = make(map[string]string)
 		}
-		if _, exist := annotation[deletePriorityPodAnnotationKey]; exist {
-			if count == podsToDelete {
-				break
-			}
-			// neu da update 1 lan cho tat ca pod va day la lan thu 2 - xay ra trong truong hop tang tung pod cho moi node
-			if annotation[deletePriorityPodAnnotationKey] == "1" {
-				continue
-			} else {
-				annotation[deletePriorityPodAnnotationKey] = "1"
-				count++
-			}
+		if podsToDelete == 0 {
+			annotation[deletePriorityPodAnnotationKey] = "0"
 		} else {
-			// Normal
-			if podsToDelete == 0 || count >= podsToDelete {
-				annotation[deletePriorityPodAnnotationKey] = "0"
-			} else {
-				annotation[deletePriorityPodAnnotationKey] = "1"
-				count++
+			if _, exist := annotation[deletePriorityPodAnnotationKey]; exist {
+				klog.Infof("Pod %s has annotation = %s", podsOnNode[i].Name, copyPod.ObjectMeta.Annotations[deletePriorityPodAnnotationKey])
+				// neu da update 1 lan cho tat ca pod va day la lan thu 2 - xay ra trong truong hop tang tung pod cho moi node
+				if annotation[deletePriorityPodAnnotationKey] == "1" {
+					continue
+				} else {
+					annotation[deletePriorityPodAnnotationKey] = "1"
+					count++
+				}
 			}
 		}
 		copyPod.ObjectMeta.Annotations = annotation
 		_, error := Clientset.CoreV1().Pods(copyPod.Namespace).Update(context.TODO(), copyPod, metav1.UpdateOptions{})
 		if error != nil {
 			klog.Fatal("Can not update pod annotation")
+		}
+		if podsToDelete != 0 && count == podsToDelete {
+			break
 		}
 	}
 	return count
