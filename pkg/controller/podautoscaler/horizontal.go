@@ -22,6 +22,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"log"
 	"math"
 	"sort"
 	"strconv"
@@ -199,7 +200,6 @@ func (a *HorizontalController) Run(stopCh <-chan struct{}) {
 
 // obj could be an *v1.HorizontalPodAutoscaler, or a DeletionFinalStateUnknown marker item.
 func (a *HorizontalController) updateHPA(old, cur interface{}) {
-
 	a.enqueueHPA(cur)
 }
 
@@ -726,6 +726,7 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 				for TotalOfPodsWillBeDownScaled > 0 {
 					needDeleteNodeWith1Pods := make([]string,0)
 					if remainingPodsToDownscale == 0 {
+						log.Printf("Downscale complete")
 						break
 					}
 					TotalOfPodsWillBeDownScaled = remainingPodsToDownscale
@@ -738,11 +739,11 @@ func (a *HorizontalController) reconcileAutoscaler(hpav1Shared *autoscalingv1.Ho
 						if i == 0 && numOfPodsWillBeDownScaledOnNode == 0 {
 							bAllNodesHasSameTrafficValue = true
 						}
-						if bAllNodesHasSameTrafficValue == true {
+						if bAllNodesHasSameTrafficValue == true || len(copyNodesTrafficMap) == 1 {
 							numOfPodsWillBeDownScaledOnNode = 1
 						}
-						if len(copyNodesTrafficMap) == 1 {
-							numOfPodsWillBeDownScaledOnNode = 1
+						if numOfPodsWillBeDownScaledOnNode > int(remainingPodsToDownscale) {
+							numOfPodsWillBeDownScaledOnNode = int(remainingPodsToDownscale)
 						}
 						klog.Infof("$$$Logging calculation result for node %s", node)
 						klog.Infof("Node %s has %d pods", node, remainingPodsOnNodeMap[node])
